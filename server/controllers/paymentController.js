@@ -10,41 +10,27 @@ const User      = require('../models/User');
 const ApiError  = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Environment Validation
-// ─────────────────────────────────────────────────────────────────────────────
 const validateRazorpayConfig = () => {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  
   if (!keyId || !keyId.trim()) {
     console.error('❌ RAZORPAY_KEY_ID not configured');
     throw new Error('Razorpay key ID not configured');
   }
-  
   if (!keySecret || !keySecret.trim()) {
     console.error('❌ RAZORPAY_KEY_SECRET not configured');
     throw new Error('Razorpay key secret not configured');
   }
-  
   return { keyId: keyId.trim(), keySecret: keySecret.trim() };
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 const getRazorpay = () => {
   const { keyId, keySecret } = validateRazorpayConfig();
-  return new Razorpay({
-    key_id:     keyId,
-    key_secret: keySecret,
-  });
+  return new Razorpay({ key_id: keyId, key_secret: keySecret });
 };
 
-/** Undo stock decrements when payment order creation fails after DB commit. */
 const rollbackBooking = async (bookingId, ticketLines) => {
   try {
-    // Restore ticket stock
     for (const { ticket, quantity } of ticketLines) {
       await Ticket.findByIdAndUpdate(ticket, { $inc: { soldQuantity: -quantity } });
     }
@@ -60,15 +46,6 @@ const rollbackBooking = async (bookingId, ticketLines) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/payments/create-order
-// ─────────────────────────────────────────────────────────────────────────────
-/**
- * Single endpoint that:
- *  1. Atomically validates stock, creates Booking (pending), decrements stock
- *  2. For free events → confirms booking immediately, returns { isFree: true }
- *  3. For paid events → creates Razorpay order, returns orderId + bookingId
- */
 const createOrder = async (req, res) => {
   const { eventId, tickets: ticketLines, attendee } = req.body;
 
@@ -76,7 +53,6 @@ const createOrder = async (req, res) => {
   if (!ticketLines || ticketLines.length === 0)
     throw new ApiError(400, 'At least one ticket must be selected');
 
-  // ── Step 1: Atomic transaction ─────────────────────────────────────────────
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -105,24 +81,15 @@ const createOrder = async (req, res) => {
       if (quantity > ticket.perUserLimit)
         throw new ApiError(400, `Max ${ticket.perUserLimit} "${ticket.name}" per person`);
 
-      await Ticket.findByIdAndUpdate(
-        ticketId,
-        { $inc: { soldQuantity: quantity } },
-        { session }
-      );
+      await Ticket.findByIdAndUpdate(ticketId, { $inc: { soldQuantity: quantity } }, { session });
 
       savedTicketLines.push({ ticket: ticket._id, name: ticket.name, quantity, unitPrice: ticket.price });
       totalAmount    += ticket.price * quantity;
       totalQtyBooked += quantity;
     }
 
-    await Event.findByIdAndUpdate(
-      eventId,
-      { $inc: { soldCount: totalQtyBooked } },
-      { session }
-    );
+    await Event.findByIdAndUpdate(eventId, { $inc: { soldCount: totalQtyBooked } }, { session });
 
-    // Normalise attendee fields (form sends attendeeName / attendeeEmail / attendeePhone)
     const attendeeInfo = {
       name:  (attendee?.attendeeName  || attendee?.name  || '').trim(),
       email: (attendee?.attendeeEmail || attendee?.email || '').trim().toLowerCase(),
@@ -138,7 +105,7 @@ const createOrder = async (req, res) => {
 
     await session.commitTransaction();
     session.endSession();
-    // ── Socket.IO — emit ticketUpdate (real-time quantity sync) ──────────────
+
     const io = req.app.get('io');
     if (io) {
       for (const line of savedTicketLines) {
@@ -153,10 +120,9 @@ const createOrder = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    throw err; // forwarded to Express errorHandler → JSON error response
+    throw err;
   }
 
-  // ── Step 2: Post-commit side-effects (non-critical) ─────────────────────────
   try {
     const { sendBookingConfirmation } = require('../services/emailService');
     const [userDoc, eventDoc] = await Promise.all([
@@ -177,12 +143,10 @@ const createOrder = async (req, res) => {
     console.error('⚠️  Post-booking side-effect error (booking saved OK):', e.message);
   }
 
-  // ── Step 3: Free event → confirm immediately ──────────────────────────────
   if (totalAmount === 0) {
     booking.status = 'confirmed';
     await booking.save();
 
-    // Issue QR ticket for free booking (non-blocking)
     setImmediate(async () => {
       try {
         const { generateTicket } = require('../services/qrService');
@@ -194,27 +158,37 @@ const createOrder = async (req, res) => {
         ]);
         if (!userDoc || !eventDoc) return;
 
-        const tierName = savedTicketLines[0]?.name || 'General';
-        const { ticketCode, qrToken, qrImage } = await generateTicket(
-          { eventId, userId: req.user.id, tierName },
-          eventDoc
-        );
+        const issuedTickets = [];
 
-        await IssuedTicket.create({
-          booking: booking._id, event: eventId, user: req.user.id,
-          ticketCode, qrToken, qrImage, tierName, paymentStatus: 'completed',
-        });
+        for (const line of savedTicketLines) {
+          const lineTierName = line.name || 'General';
+          for (let i = 0; i < line.quantity; i++) {
+            const { ticketCode, qrToken, qrImage } = await generateTicket(
+              { eventId, userId: req.user.id, tierName: lineTierName },
+              eventDoc
+            );
+            await IssuedTicket.create({
+              booking: booking._id, event: eventId, user: req.user.id,
+              ticketCode, qrToken, qrImage, tierName: lineTierName, paymentStatus: 'completed',
+            });
+            issuedTickets.push({ ticketCode, qrImage, tierName: lineTierName });
+            console.log(`✅ Free QR ticket issued: ${ticketCode} (${lineTierName})`);
+          }
+        }
 
-        await Booking.findByIdAndUpdate(booking._id, { qrCode: qrImage });
+        if (issuedTickets.length > 0) {
+          await Booking.findByIdAndUpdate(booking._id, { qrCode: issuedTickets[0].qrImage });
+        }
 
         await sendBookingConfirmation({
           user:  { name: userDoc.name, email: userDoc.email },
           event: eventDoc,
-          ticket: { tierName, ticketCode },
+          ticket: { tierName: issuedTickets[0]?.tierName, ticketCode: issuedTickets[0]?.ticketCode },
+          tickets: issuedTickets,
           totalAmount: 0,
-          qrImage,
+          qrImage: issuedTickets[0]?.qrImage,
         });
-        console.log(`✅ Free QR ticket issued & email sent: ${ticketCode}`);
+        console.log(`✅ ${issuedTickets.length} Free QR tickets issued & email sent`);
       } catch (e) {
         console.error('⚠️  Free booking QR error:', e.message);
       }
@@ -230,25 +204,21 @@ const createOrder = async (req, res) => {
     );
   }
 
-
-  // ── Step 4: Paid event → create Razorpay order ────────────────────────────
   let razorpayOrder;
   try {
     const rz = getRazorpay();
     razorpayOrder = await rz.orders.create({
-      amount:   Math.round(totalAmount * 100), // paise
+      amount:   Math.round(totalAmount * 100),
       currency: 'INR',
       receipt:  booking.bookingRef,
       notes:    { bookingId: booking._id.toString(), userId: req.user.id },
     });
   } catch (rzErr) {
-    // Razorpay failed → roll back the booking to avoid ghost reservations
     console.error('❌ Razorpay order creation failed:', rzErr.message || rzErr);
     await rollbackBooking(booking._id, savedTicketLines);
     throw new ApiError(502, 'Payment gateway error — please try again shortly');
   }
 
-  // Persist the payment record in pending state
   const payment = await Payment.create({
     booking:         booking._id,
     user:            req.user.id,
@@ -274,11 +244,7 @@ const createOrder = async (req, res) => {
   );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/payments/verify
-// ─────────────────────────────────────────────────────────────────────────────
 const verifyPayment = async (req, res) => {
-  // Accept both snake_case (Razorpay callback) and camelCase (our convention)
   const razorpayOrderId   = req.body.razorpay_order_id   || req.body.razorpayOrderId;
   const razorpayPaymentId = req.body.razorpay_payment_id || req.body.razorpayPaymentId;
   const razorpaySignature = req.body.razorpay_signature  || req.body.razorpaySignature;
@@ -287,7 +253,6 @@ const verifyPayment = async (req, res) => {
   if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature || !bookingId)
     throw new ApiError(400, 'Missing required payment verification fields');
 
-  // Validate Razorpay HMAC signature
   const { keySecret: razorpaySecret } = validateRazorpayConfig();
 
   const expectedSig = crypto
@@ -308,7 +273,6 @@ const verifyPayment = async (req, res) => {
     throw new ApiError(400, 'Payment signature verification failed');
   }
 
-  // Find payment record with better error handling
   console.log('🔍 Looking up payment record for order:', razorpayOrderId);
   
   const payment = await Payment.findOneAndUpdate(
@@ -319,7 +283,6 @@ const verifyPayment = async (req, res) => {
   
   if (!payment) {
     console.error('❌ Payment record not found for order:', razorpayOrderId);
-    // Check if payment exists with different status
     const existingPayment = await Payment.findOne({ razorpayOrderId });
     if (existingPayment) {
       console.error('❌ Payment exists but update failed. Current status:', existingPayment.status);
@@ -329,8 +292,6 @@ const verifyPayment = async (req, res) => {
   }
   
   console.log('✅ Payment record found and updated:', payment._id);
-
-  // Update booking with status validation
   console.log('🔍 Updating booking:', bookingId);
   
   const booking = await Booking.findById(bookingId)
@@ -343,7 +304,6 @@ const verifyPayment = async (req, res) => {
   
   if (booking.status === 'confirmed') {
     console.warn('⚠️ Booking already confirmed:', bookingId);
-    // Still return success but don't process again
     return res.json(new ApiResponse(200, { payment, booking }, 'Booking already confirmed'));
   }
   
@@ -357,11 +317,10 @@ const verifyPayment = async (req, res) => {
   
   console.log('✅ Booking confirmed:', bookingId);
   
-  // ── Socket.IO — emit ticketUpdate (real-time quantity sync) ──────────────
   const io = req.app.get('io');
   if (io) {
     for (const line of booking.tickets) {
-      const ticket = line.ticket || {}; // populated
+      const ticket = line.ticket || {};
       io.to(`event:${booking.event._id || booking.event}`).emit('ticketUpdate', {
         eventId:      booking.event._id || booking.event,
         ticketTypeId: ticket._id || line.ticket,
@@ -370,10 +329,6 @@ const verifyPayment = async (req, res) => {
     }
   }
 
-  // ── Determine tier name from populated tickets ────────────────────────────
-  const tierName = booking.tickets?.[0]?.ticket?.name || 'General';
-
-  // ── Issue QR ticket + send confirmation email (non-blocking best-effort) ───
   setImmediate(async () => {
     try {
       const { generateTicket } = require('../services/qrService');
@@ -386,40 +341,50 @@ const verifyPayment = async (req, res) => {
 
       if (!userDoc || !eventDoc) return;
 
-      const { ticketCode, qrToken, qrImage } = await generateTicket(
-        {
-          eventId:  booking.event.toString(),
-          userId:   booking.user.toString(),
-          tierName,
-        },
-        eventDoc
-      );
+      const issuedTickets = [];
 
-      // Create one IssuedTicket per booking (expand to per-ticket-quantity if needed)
-      await IssuedTicket.create({
-        booking:       booking._id,
-        event:         booking.event,
-        user:          booking.user,
-        ticketCode,
-        qrToken,
-        qrImage,
-        tierName,
-        paymentStatus: 'completed',
-      });
+      for (const line of booking.tickets) {
+        const lineTierName = line.ticket?.name || line.name || 'General';
+        for (let i = 0; i < line.quantity; i++) {
+          const { ticketCode, qrToken, qrImage } = await generateTicket(
+            {
+              eventId:  booking.event.toString(),
+              userId:   booking.user.toString(),
+              tierName: lineTierName,
+            },
+            eventDoc
+          );
 
-      // Also save qrImage on the booking for profile display
-      await Booking.findByIdAndUpdate(bookingId, { qrCode: qrImage });
+          await IssuedTicket.create({
+            booking:       booking._id,
+            event:         booking.event,
+            user:          booking.user,
+            ticketCode,
+            qrToken,
+            qrImage,
+            tierName:      lineTierName,
+            paymentStatus: 'completed',
+          });
 
-      // Send confirmation email with embedded QR
+          issuedTickets.push({ ticketCode, qrImage, tierName: lineTierName });
+          console.log(`✅ QR ticket issued: ${ticketCode} (${lineTierName})`);
+        }
+      }
+
+      if (issuedTickets.length > 0) {
+        await Booking.findByIdAndUpdate(bookingId, { qrCode: issuedTickets[0].qrImage });
+      }
+
       await sendBookingConfirmation({
-        user:  { name: userDoc.name,  email: userDoc.email },
+        user:  { name: userDoc.name, email: userDoc.email },
         event: eventDoc,
-        ticket: { tierName, ticketCode },
+        ticket: { tierName: issuedTickets[0]?.tierName, ticketCode: issuedTickets[0]?.ticketCode },
+        tickets: issuedTickets,
         totalAmount: booking.totalAmount,
-        qrImage,
+        qrImage: issuedTickets[0]?.qrImage,
       });
 
-      console.log(`✅ QR ticket issued & email sent: ${ticketCode}`);
+      console.log(`✅ ${issuedTickets.length} QR tickets issued & email sent`);
     } catch (e) {
       console.error('⚠️  QR ticket / email error (payment already confirmed):', e.message);
     }
@@ -428,10 +393,6 @@ const verifyPayment = async (req, res) => {
   res.json(new ApiResponse(200, { payment, booking }, 'Payment verified — booking confirmed'));
 };
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/payments/:id
-// ─────────────────────────────────────────────────────────────────────────────
 const getPaymentById = async (req, res) => {
   const payment = await Payment.findById(req.params.id)
     .populate('booking', 'bookingRef status totalAmount')

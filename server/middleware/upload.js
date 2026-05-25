@@ -10,7 +10,7 @@ const createCloudinaryStorage = (folder, transformation) => ({
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder,
-        allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'avif'],
         transformation,
       },
       (error, result) => {

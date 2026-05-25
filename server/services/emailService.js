@@ -1,6 +1,5 @@
 const nodemailer = require('nodemailer');
 
-/** Reusable SMTP transporter — created once and reused across requests. */
 const transporter = nodemailer.createTransport({
   host:   process.env.EMAIL_HOST,
   port:   Number(process.env.EMAIL_PORT) || 587,
@@ -11,24 +10,18 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-/**
- * Sends a booking confirmation email with QR code embedded (CID attachment).
- *
- * Accepts EITHER the old flat params shape OR the new { user, event, ticket, qrImage } shape
- * so existing callers don't break.
- *
- * New shape: { user: { name, email }, event: { title, startDate, venue }, ticket: { tierName, ticketCode }, qrImage }
- * Old shape: { to, attendeeName, bookingRef, eventTitle, eventDate, venueName, totalAmount, qrCode }
- */
 const sendBookingConfirmation = async (params) => {
-  // ── Normalise into a single shape ──────────────────────────────────────────
-  let to, holderName, ticketCode, tierName, eventTitle, eventDate, venueName, totalAmount, qrImage, eventId;
+  let to, holderName, ticketCodes, tierName, eventTitle, eventDate, venueName, totalAmount, qrImages, eventId;
 
   if (params.user && params.event && params.ticket) {
-    // New shape
     to          = params.user.email;
     holderName  = params.user.name || 'Attendee';
-    ticketCode  = params.ticket.ticketCode || '';
+    // Support both single ticketCode string and array of tickets
+    if (params.tickets && Array.isArray(params.tickets)) {
+      ticketCodes = params.tickets;
+    } else {
+      ticketCodes = [{ ticketCode: params.ticket.ticketCode || '', tierName: params.ticket.tierName || 'General', qrImage: params.qrImage || null }];
+    }
     tierName    = params.ticket.tierName   || 'General';
     eventTitle  = params.event.title       || 'Event';
     eventDate   = params.event.startDate
@@ -38,23 +31,34 @@ const sendBookingConfirmation = async (params) => {
       ? `${params.event.venue.name || ''}, ${params.event.venue.city || ''}`.trim().replace(/^,|,$/g, '')
       : 'TBD';
     totalAmount = params.totalAmount ?? 0;
-    qrImage     = params.qrImage || null;
     eventId     = params.event._id || params.event.id || '';
   } else {
-    // Legacy flat shape
     to          = params.to;
     holderName  = params.attendeeName  || 'Attendee';
-    ticketCode  = params.bookingRef    || '';
+    ticketCodes = [{ ticketCode: params.bookingRef || '', tierName: 'General', qrImage: params.qrCode || params.qrImage || null }];
     tierName    = 'General';
     eventTitle  = params.eventTitle    || 'Event';
     eventDate   = params.eventDate     || 'TBD';
     venueName   = params.venueName     || 'TBD';
     totalAmount = params.totalAmount   ?? 0;
-    qrImage     = params.qrCode        || params.qrImage || null;
     eventId     = params.eventId       || '';
   }
 
-  // ── Build HTML ──────────────────────────────────────────────────────────────
+  // Build QR sections HTML
+  const qrSectionsHtml = ticketCodes.map((t, index) => {
+    const cidId = `entry_qr_code_${index}`;
+    return `
+    <div style="text-align:center;margin:20px 0;padding:20px;background:#fff;border-radius:8px;border:1px solid #e2e8f0">
+      <h3 style="color:#0A1931;margin:0 0 4px">Ticket ${index + 1} — ${t.tierName}</h3>
+      <p style="color:#64748b;font-size:13px;margin:0 0 8px;font-family:monospace">${t.ticketCode}</p>
+      <p style="color:#dc2626;font-weight:bold;font-size:12px;margin:0 0 12px">
+        ⚠️ Valid for ONE entry only. Do not share this QR code.
+      </p>
+      ${t.qrImage ? `<img src="cid:${cidId}" alt="Entry QR Code"
+           style="width:200px;height:200px;border:3px solid #0A1931;border-radius:8px;display:block;margin:0 auto"/>` : ''}
+    </div>`;
+  }).join('');
+
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -73,7 +77,7 @@ const sendBookingConfirmation = async (params) => {
 
     <div style="padding:32px 24px;background:#f9f9f9">
       <p style="font-size:16px">Hi <strong>${holderName}</strong>,</p>
-      <p>Your ticket has been confirmed. Show the QR code below at the venue entrance.</p>
+      <p>Your tickets have been confirmed. Show the QR codes below at the venue entrance.</p>
 
       <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px">
         <tr style="background:#e8f4fd">
@@ -89,16 +93,8 @@ const sendBookingConfirmation = async (params) => {
           <td style="padding:10px 12px;color:#333">${venueName}</td>
         </tr>
         <tr>
-          <td style="padding:10px 12px;font-weight:bold;color:#333">Tier</td>
-          <td style="padding:10px 12px;color:#333">${tierName}</td>
-        </tr>
-        <tr style="background:#e8f4fd">
-          <td style="padding:10px 12px;font-weight:bold;color:#333">Ticket ID</td>
-          <td style="padding:10px 12px;color:#333;font-family:monospace">${ticketCode}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;font-weight:bold;color:#333">Event ID</td>
-          <td style="padding:10px 12px;color:#333;font-family:monospace;font-size:12px">${eventId}</td>
+          <td style="padding:10px 12px;font-weight:bold;color:#333">Total Tickets</td>
+          <td style="padding:10px 12px;color:#333">${ticketCodes.length}</td>
         </tr>
         ${totalAmount > 0 ? `
         <tr style="background:#e8f4fd">
@@ -107,57 +103,47 @@ const sendBookingConfirmation = async (params) => {
         </tr>` : ''}
       </table>
 
-      ${qrImage ? `
-      <div style="text-align:center;margin:28px 0;padding:20px;background:#fff;border-radius:8px;border:1px solid #e2e8f0">
-        <h3 style="color:#0A1931;margin:0 0 8px">Your Entry QR Code</h3>
-        <p style="color:#dc2626;font-weight:bold;font-size:13px;margin:0 0 16px">
-          ⚠️ Valid for ONE entry only. Do not share this QR code.
-        </p>
-        <img src="cid:entry_qr_code" alt="Entry QR Code"
-             style="width:220px;height:220px;border:3px solid #0A1931;border-radius:8px;display:block;margin:0 auto"/>
-      </div>` : ''}
+      <h3 style="color:#0A1931;text-align:center;margin:24px 0 8px">Your Entry QR Codes</h3>
+      ${qrSectionsHtml}
     </div>
 
     <div style="background:#0A1931;padding:14px;text-align:center">
       <p style="color:#64748b;margin:0;font-size:12px">
-        Built with ❤️ by Tanishq Sharma — EventHub 2026 &nbsp;|&nbsp; Mini Project
+        Built with ❤️ by Tanishq Sharma — EventHub 2026
       </p>
     </div>
   </div>
 </body>
 </html>`;
 
-  // ── Send ────────────────────────────────────────────────────────────────────
   const mailOptions = {
     from:    process.env.EMAIL_FROM,
     to,
-    subject: `🎟️ Booking Confirmed — ${eventTitle} (${ticketCode})`,
+    subject: `🎟️ Booking Confirmed — ${eventTitle} (${ticketCodes.length} ticket${ticketCodes.length > 1 ? 's' : ''})`,
     html,
+    attachments: [],
   };
 
-  // Embed QR as CID attachment — works in Gmail / Outlook without being blocked
-  if (qrImage) {
-    const base64Data = qrImage.includes('base64,')
-      ? qrImage.split('base64,')[1]
-      : qrImage;
+  // Attach each QR as CID
+  ticketCodes.forEach((t, index) => {
+    if (t.qrImage) {
+      const base64Data = t.qrImage.includes('base64,')
+        ? t.qrImage.split('base64,')[1]
+        : t.qrImage;
 
-    mailOptions.attachments = [
-      {
-        filename:    'entry-qr.png',
+      mailOptions.attachments.push({
+        filename:    `ticket-${index + 1}-qr.png`,
         content:     base64Data,
         encoding:    'base64',
         contentType: 'image/png',
-        cid:         'entry_qr_code', // matches cid: in html img src
-      },
-    ];
-  }
+        cid:         `entry_qr_code_${index}`,
+      });
+    }
+  });
 
   await transporter.sendMail(mailOptions);
 };
 
-/**
- * Generic email sender for custom notifications.
- */
 const sendEmail = async ({ to, subject, html }) => {
   await transporter.sendMail({
     from: process.env.EMAIL_FROM,
@@ -167,14 +153,8 @@ const sendEmail = async ({ to, subject, html }) => {
   });
 };
 
-// ── Cancellation Email Templates ──────────────────────────────────────────────
-
-/**
- * Sends a cancellation request notification to the admin.
- */
 const sendCancellationRequestToAdmin = async ({ booking, user, event, refundAmount, refundPercent, hoursUntilEvent }) => {
   const adminEmail = process.env.ADMIN_EMAIL || process.env.EMAIL_USER;
-
   await transporter.sendMail({
     from:    process.env.EMAIL_FROM,
     to:      adminEmail,
@@ -198,18 +178,10 @@ const sendCancellationRequestToAdmin = async ({ booking, user, event, refundAmou
             <tr><td style="padding:10px;font-weight:bold">Requested At</td><td style="padding:10px">${new Date().toLocaleString('en-IN')}</td></tr>
           </table>
           <div style="text-align:center;margin:24px 0">
-            <p style="font-size:16px;font-weight:bold;margin-bottom:16px">Take Action:</p>
             <a href="${process.env.CLIENT_URL}/admin/cancellations"
-              style="background:#16a34a;color:white;padding:12px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold;display:inline-block;margin-right:12px">
+              style="background:#16a34a;color:white;padding:12px 32px;border-radius:8px;text-decoration:none;font-size:16px;font-weight:bold;display:inline-block">
               ✓ Review Request
             </a>
-          </div>
-          <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin-top:16px">
-            <p style="margin:0;color:#92400e;font-size:13px">
-              <strong>Refund Policy:</strong> User requested ${hoursUntilEvent}h before event.
-              Eligible for ${refundPercent}% refund = ₹${refundAmount}.
-              Please review and approve or reject within 24 hours.
-            </p>
           </div>
         </div>
         <div style="background:#0A1931;padding:12px;text-align:center">
@@ -220,9 +192,6 @@ const sendCancellationRequestToAdmin = async ({ booking, user, event, refundAmou
   });
 };
 
-/**
- * Sends a cancellation approved email to the user with refund details.
- */
 const sendCancellationApprovedEmail = async ({ user, event, booking, refundAmount, refundPercent }) => {
   await transporter.sendMail({
     from:    process.env.EMAIL_FROM,
@@ -238,31 +207,13 @@ const sendCancellationApprovedEmail = async ({ user, event, booking, refundAmoun
             <h2 style="color:#16a34a;margin:0">✓ Cancellation Approved</h2>
             <p style="color:#15803d;margin:8px 0 0">Your refund has been initiated</p>
           </div>
-          <p style="font-size:16px">Hi <strong>${user.name}</strong>,</p>
-          <p>Your cancellation request for <strong>${event.title}</strong> has been approved by our admin team.</p>
+          <p>Hi <strong>${user.name}</strong>,</p>
+          <p>Your cancellation for <strong>${event.title}</strong> has been approved.</p>
           <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr style="background:#e8f4fd"><td style="padding:10px;font-weight:bold">Booking Ref</td><td style="padding:10px;font-family:monospace">${booking.bookingRef}</td></tr>
-            <tr><td style="padding:10px;font-weight:bold">Event</td><td style="padding:10px">${event.title}</td></tr>
-            <tr style="background:#e8f4fd"><td style="padding:10px;font-weight:bold">Original Amount</td><td style="padding:10px">₹${booking.totalAmount}</td></tr>
-            <tr><td style="padding:10px;font-weight:bold">Refund Amount</td><td style="padding:10px;color:#16a34a;font-weight:bold;font-size:18px">₹${refundAmount} (${refundPercent}%)</td></tr>
-            <tr style="background:#e8f4fd"><td style="padding:10px;font-weight:bold">Refund Status</td><td style="padding:10px;color:#16a34a">Processing</td></tr>
-            <tr><td style="padding:10px;font-weight:bold">Cancellation Date</td><td style="padding:10px">${new Date().toLocaleString('en-IN')}</td></tr>
+            <tr><td style="padding:10px;font-weight:bold">Refund Amount</td><td style="padding:10px;color:#16a34a;font-weight:bold">₹${refundAmount} (${refundPercent}%)</td></tr>
+            <tr style="background:#e8f4fd"><td style="padding:10px;font-weight:bold">Refund Status</td><td style="padding:10px;color:#16a34a">Processing (5-7 business days)</td></tr>
           </table>
-          <div style="background:#dbeafe;border:1px solid #3b82f6;border-radius:8px;padding:16px;margin:16px 0">
-            <h3 style="color:#1e40af;margin:0 0 8px">Refund Timeline</h3>
-            <p style="color:#1e40af;margin:0">Your refund of <strong>₹${refundAmount}</strong> will be credited to your original payment method within <strong>7 business days</strong>.</p>
-            <ul style="color:#1e40af;margin:8px 0 0;padding-left:20px">
-              <li>Credit/Debit Card: 5-7 business days</li>
-              <li>UPI: 2-3 business days</li>
-              <li>Net Banking: 5-7 business days</li>
-              <li>Wallet: 1-2 business days</li>
-            </ul>
-          </div>
-          <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px">
-            <p style="margin:0;color:#92400e;font-size:13px">
-              If you do not receive the refund within 7 business days, please contact us at ${process.env.EMAIL_USER}
-            </p>
-          </div>
         </div>
         <div style="background:#0A1931;padding:12px;text-align:center">
           <p style="color:#94a3b8;margin:0;font-size:12px">Built with love by Tanishq Sharma — EventHub 2026</p>
@@ -272,9 +223,6 @@ const sendCancellationApprovedEmail = async ({ user, event, booking, refundAmoun
   });
 };
 
-/**
- * Sends a cancellation rejected email to the user.
- */
 const sendCancellationRejectedEmail = async ({ user, event, booking, reason }) => {
   await transporter.sendMail({
     from:    process.env.EMAIL_FROM,
@@ -290,14 +238,12 @@ const sendCancellationRejectedEmail = async ({ user, event, booking, reason }) =
             <h2 style="color:#dc2626;margin:0">✗ Cancellation Request Rejected</h2>
           </div>
           <p>Hi <strong>${user.name}</strong>,</p>
-          <p>Unfortunately, your cancellation request for <strong>${event.title}</strong> has been reviewed and rejected.</p>
+          <p>Your cancellation for <strong>${event.title}</strong> has been rejected.</p>
           <table style="width:100%;border-collapse:collapse;margin:16px 0">
             <tr style="background:#e8f4fd"><td style="padding:10px;font-weight:bold">Booking Ref</td><td style="padding:10px;font-family:monospace">${booking.bookingRef}</td></tr>
-            <tr><td style="padding:10px;font-weight:bold">Event</td><td style="padding:10px">${event.title}</td></tr>
-            <tr style="background:#fee2e2"><td style="padding:10px;font-weight:bold">Reason</td><td style="padding:10px;color:#dc2626">${reason}</td></tr>
+            <tr><td style="padding:10px;font-weight:bold">Reason</td><td style="padding:10px;color:#dc2626">${reason}</td></tr>
           </table>
-          <p>Your booking remains <strong>confirmed</strong>. We look forward to seeing you at the event!</p>
-          <p style="color:#64748b;font-size:13px">If you believe this decision is incorrect, please contact us at ${process.env.EMAIL_USER}</p>
+          <p>Your booking remains <strong>confirmed</strong>. See you at the event!</p>
         </div>
         <div style="background:#0A1931;padding:12px;text-align:center">
           <p style="color:#94a3b8;margin:0;font-size:12px">Built with love by Tanishq Sharma — EventHub 2026</p>
