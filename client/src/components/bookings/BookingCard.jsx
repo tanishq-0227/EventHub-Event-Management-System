@@ -1,40 +1,65 @@
-import { useState } from 'react';
-import { formatDate }      from '../../utils/formatDate';
-import { formatCurrency }  from '../../utils/formatCurrency';
+import { useMemo, useState } from 'react';
+import { formatDate } from '../../utils/formatDate';
+import { formatCurrency } from '../../utils/formatCurrency';
 import { canCancelBooking, getRefundAmount } from '../../utils/cancellationPolicy';
-import Badge  from '../ui/Badge';
+import Badge from '../ui/Badge';
 import Button from '../ui/Button';
-import { 
-  CalendarDaysIcon, 
-  MapPinIcon, 
-  TicketIcon, 
-  ClockIcon, 
-  CheckCircleIcon, 
+import {
+  CalendarDaysIcon,
+  MapPinIcon,
+  TicketIcon,
+  ClockIcon,
+  CheckCircleIcon,
   XCircleIcon,
-  ArrowPathIcon 
+  ArrowPathIcon,
+  QrCodeIcon,
+  SparklesIcon,
 } from '@heroicons/react/24/outline';
 
 const statusVariant = {
   confirmed: 'success',
-  pending:   'warning',
+  pending: 'warning',
   cancelled: 'danger',
-  refunded:  'neutral',
+  refunded: 'neutral',
 };
 
 export default function BookingCard({ booking, onRequestCancel, onDirectCancel, onViewQr }) {
   const [cancellingLocal, setCancellingLocal] = useState(false);
   const event = booking?.event || {};
 
-  const isPending    = booking?.status === 'pending';
-  const isConfirmed  = booking?.status === 'confirmed';
-  const isCancelled  = booking?.status === 'cancelled';
-
+  const isPending = booking?.status === 'pending';
+  const isConfirmed = booking?.status === 'confirmed';
+  const isCancelled = booking?.status === 'cancelled';
 
   const isCancelRequested = booking?.cancellationStatus === 'requested';
-  const isCancelApproved  = booking?.cancellationStatus === 'approved';
+  const isCancelApproved = booking?.cancellationStatus === 'approved';
 
-  // ── Policy check (only relevant for confirmed bookings) ───────────────────
-  const policy     = canCancelBooking(event.startDate, booking?.status);
+  const totalTickets =
+    booking?.issuedTickets?.length ||
+    booking?.tickets?.reduce((sum, t) => sum + Number(t.quantity || 0), 0) ||
+    1;
+
+  const seatPreview = useMemo(() => {
+    const seats =
+      booking?.issuedTickets
+        ?.map((ticket) => ticket.seatNumber)
+        .filter(Boolean) || [];
+
+    if (seats.length === 0) return null;
+    if (seats.length <= 4) return seats.join(', ');
+    return `${seats.slice(0, 4).join(', ')} +${seats.length - 4} more`;
+  }, [booking]);
+
+  const tierPreview = useMemo(() => {
+    const tiers =
+      booking?.issuedTickets
+        ?.map((ticket) => ticket.tierName)
+        .filter(Boolean) || [];
+
+    return [...new Set(tiers)].slice(0, 3);
+  }, [booking]);
+
+  const policy = canCancelBooking(event.startDate, booking?.status);
   const refundInfo = policy.canCancel
     ? getRefundAmount(booking?.totalAmount ?? 0, policy.hoursUntilEvent)
     : null;
@@ -50,137 +75,178 @@ export default function BookingCard({ booking, onRequestCancel, onDirectCancel, 
   };
 
   return (
-    <div className="glass p-5 flex flex-col sm:flex-row gap-4 hover:border-white/10 transition-colors">
-      {/* Event banner thumb */}
-      {event.bannerImage ? (
-        <img
-          src={event.bannerImage}
-          alt={event.title}
-          className="w-full sm:w-28 h-24 sm:h-20 object-cover rounded-xl flex-shrink-0"
-        />
-      ) : (
-        <div className="w-full sm:w-28 h-24 sm:h-20 bg-surface-border rounded-xl flex items-center justify-center flex-shrink-0">
-          <CalendarDaysIcon className="w-8 h-8 text-primary-400/40" />
-        </div>
-      )}
+    <div className="group relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.045] p-4 shadow-[0_20px_70px_rgba(0,0,0,0.28)] backdrop-blur-2xl transition-all duration-500 hover:-translate-y-1 hover:border-cyan-400/25 hover:shadow-[0_25px_90px_rgba(6,182,212,0.16)]">
+      <div className="pointer-events-none absolute -right-20 -top-20 h-44 w-44 rounded-full bg-cyan-400/10 blur-3xl transition-opacity duration-500 group-hover:opacity-100" />
+      <div className="pointer-events-none absolute -bottom-24 left-20 h-52 w-52 rounded-full bg-blue-500/10 blur-3xl" />
 
-      <div className="flex-1 min-w-0">
-        {/* Title & status badge */}
-        <div className="flex items-start justify-between gap-2 flex-wrap">
-          <h3 className="font-semibold text-white truncate text-base">{event.title || 'Event'}</h3>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant={statusVariant[booking?.status] ?? 'neutral'}>
-              {booking?.status}
-            </Badge>
-            {booking?.bookingRef && (
-              <span className="font-mono text-[10px] text-slate-500 uppercase">#{booking.bookingRef}</span>
-            )}
+      <div className="relative flex flex-col gap-4 sm:flex-row">
+        {event.bannerImage ? (
+          <div className="relative h-32 w-full overflow-hidden rounded-2xl sm:h-28 sm:w-36">
+            <img
+              src={event.bannerImage}
+              alt={event.title}
+              className="h-full w-full object-cover transition duration-700 group-hover:scale-110"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/45 to-transparent" />
           </div>
-        </div>
-
-        {/* Meta info */}
-        <div className="flex flex-col gap-1 mt-1.5 text-xs text-slate-400">
-          <div className="flex items-center gap-1.5">
-            <CalendarDaysIcon className="w-3.5 h-3.5 text-primary-400" />
-            {event.startDate ? formatDate(event.startDate) : 'Date TBD'}
-          </div>
-          {(event.venue?.city || event.venue?.name) && (
-            <div className="flex items-center gap-1.5">
-              <MapPinIcon className="w-3.5 h-3.5 text-accent-400" />
-              {event.venue?.city || event.venue?.name}
-            </div>
-          )}
-          <div className="flex items-center gap-1.5">
-            <TicketIcon className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-slate-300 font-medium">
-              {booking?.tickets?.length ?? 1} ticket(s) · {formatCurrency(booking?.totalAmount ?? 0)}
-            </span>
-          </div>
-        </div>
-
-        {/* ── Status-specific conditional messages ─────────────────────────── */}
-
-        {/* Pending booking hint */}
-        {isPending && (
-          <div className="mt-3 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center gap-2">
-            <ClockIcon className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[11px] text-amber-400">
-              Payment not yet verified. Complete payment or cancel this reservation.
-            </span>
+        ) : (
+          <div className="flex h-32 w-full items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-cyan-950 to-blue-950 sm:h-28 sm:w-36">
+            <CalendarDaysIcon className="h-10 w-10 text-cyan-300/40" />
           </div>
         )}
 
-        {/* Policy-based info */}
-        {isConfirmed && !isCancelRequested && (
-          <>
-            {policy.canCancel && refundInfo && (
-              <p className="text-[11px] text-emerald-400 mt-2.5 flex items-center gap-1 italic">
-                <CheckCircleIcon className="w-3.5 h-3.5" />
-                {refundInfo.label} eligible if cancelled now
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="truncate font-display text-lg font-black text-white">
+                {event.title || 'Event'}
+              </h3>
+
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge variant={statusVariant[booking?.status] ?? 'neutral'}>
+                  {booking?.status}
+                </Badge>
+
+                {booking?.bookingRef && (
+                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 font-mono text-[10px] font-bold uppercase text-slate-400">
+                    #{booking.bookingRef}
+                  </span>
+                )}
+
+                {isConfirmed && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                    <CheckCircleIcon className="h-3.5 w-3.5" />
+                    QR Ready
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-right">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">
+                Total
               </p>
-            )}
-            {!policy.canCancel && policy.reason === 'within_48_hours' && (
-              <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-amber-400/80 bg-amber-400/5 p-2 rounded-lg border border-amber-400/10">
-                <XCircleIcon className="w-3.5 h-3.5 flex-shrink-0" />
-                <span>Cancellation locked — event starts in less than 48 hours</span>
+              <p className="font-display text-lg font-black text-white">
+                {formatCurrency(booking?.totalAmount ?? 0)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
+            <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+              <CalendarDaysIcon className="h-3.5 w-3.5 text-cyan-300" />
+              {event.startDate ? formatDate(event.startDate) : 'Date TBD'}
+            </div>
+
+            {(event.venue?.city || event.venue?.name) && (
+              <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+                <MapPinIcon className="h-3.5 w-3.5 text-blue-300" />
+                <span className="truncate">{event.venue?.city || event.venue?.name}</span>
               </div>
             )}
-          </>
-        )}
 
-        {/* Cancellation pending status details */}
-        {isCancelRequested && (
-          <div className="mt-3 p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg">
-             <p className="text-[11px] text-indigo-300 flex items-center gap-1.5">
-               <ArrowPathIcon className="w-3.5 h-3.5 animate-spin-slow" />
-               Cancellation request is being reviewed by admin
-             </p>
+            <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+              <TicketIcon className="h-3.5 w-3.5 text-emerald-300" />
+              <span className="font-semibold text-slate-200">{totalTickets} ticket(s)</span>
+            </div>
+
+            {seatPreview && (
+              <div className="flex items-center gap-1.5 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2">
+                <SparklesIcon className="h-3.5 w-3.5 text-cyan-300" />
+                <span className="truncate font-semibold text-cyan-100">Seats: {seatPreview}</span>
+              </div>
+            )}
           </div>
-        )}
 
-        {/* Action Buttons Row */}
-        <div className="flex gap-2.5 mt-4 flex-wrap items-center">
-          {/* View QR — Primary action if confirmed */}
-          <Button size="sm" variant="secondary" onClick={() => onViewQr?.(booking)}>
-            View QR
-          </Button>
+          {tierPreview.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {tierPreview.map((tier) => (
+                <span
+                  key={tier}
+                  className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-bold text-slate-300"
+                >
+                  {tier}
+                </span>
+              ))}
+            </div>
+          )}
 
-          {/* ── Cancellation Button Logic ──────────────────────────────────── */}
+          {isPending && (
+            <div className="mt-3 flex items-center gap-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3">
+              <ClockIcon className="h-4 w-4 text-amber-400" />
+              <span className="text-xs font-medium text-amber-300">
+                Payment not yet verified. Complete payment or cancel this reservation.
+              </span>
+            </div>
+          )}
 
-          {isCancelled ? (
-            <Badge variant="danger" className="py-1 px-3">
-              {isCancelApproved ? 'Cancelled (Refund Pending)' : 'Cancelled'}
-            </Badge>
+          {isConfirmed && !isCancelRequested && (
+            <>
+              {policy.canCancel && refundInfo && (
+                <p className="mt-3 flex items-center gap-1 text-xs font-semibold text-emerald-400">
+                  <CheckCircleIcon className="h-4 w-4" />
+                  {refundInfo.label} eligible if cancelled now
+                </p>
+              )}
 
-          ) : isCancelRequested ? (
-            <Badge variant="ghost" className="text-indigo-400 border-indigo-500/30">
-              Awaiting Admin Review
-            </Badge>
+              {!policy.canCancel && policy.reason === 'within_48_hours' && (
+                <div className="mt-3 flex items-center gap-2 rounded-2xl border border-amber-400/10 bg-amber-400/5 p-3 text-xs text-amber-300">
+                  <XCircleIcon className="h-4 w-4 flex-shrink-0" />
+                  <span>Cancellation locked — event starts in less than 48 hours</span>
+                </div>
+              )}
+            </>
+          )}
 
-          ) : isPending ? (
-            /* Pending bookings can be cancelled immediately */
+          {isCancelRequested && (
+            <div className="mt-3 rounded-2xl border border-indigo-500/20 bg-indigo-500/10 p-3">
+              <p className="flex items-center gap-2 text-xs font-semibold text-indigo-300">
+                <ArrowPathIcon className="h-4 w-4 animate-spin-slow" />
+                Cancellation request is being reviewed by admin
+              </p>
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
             <Button
               size="sm"
-              variant="danger"
-              loading={cancellingLocal}
-              onClick={handleDirectCancel}
-              className="text-xs px-4"
+              variant="secondary"
+              onClick={() => onViewQr?.(booking)}
+              className="border-cyan-400/20 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/20"
             >
-              Cancel Reservation
+              <QrCodeIcon className="mr-1 h-4 w-4" />
+              View QR
             </Button>
 
-          ) : policy.canCancel ? (
-            /* Confirmed bookings follow the request flow if > 48h */
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => onRequestCancel?.(booking)}
-              className="text-red-400 border border-red-500/20 hover:bg-red-500/10 hover:text-red-300 text-xs px-4"
-            >
-              Request Cancellation
-            </Button>
-
-          ) : null}
+            {isCancelled ? (
+              <Badge variant="danger" className="px-3 py-1">
+                {isCancelApproved ? 'Cancelled (Refund Pending)' : 'Cancelled'}
+              </Badge>
+            ) : isCancelRequested ? (
+              <Badge variant="ghost" className="border-indigo-500/30 text-indigo-400">
+                Awaiting Admin Review
+              </Badge>
+            ) : isPending ? (
+              <Button
+                size="sm"
+                variant="danger"
+                loading={cancellingLocal}
+                onClick={handleDirectCancel}
+                className="px-4 text-xs"
+              >
+                Cancel Reservation
+              </Button>
+            ) : policy.canCancel ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => onRequestCancel?.(booking)}
+                className="border border-red-500/20 px-4 text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300"
+              >
+                Request Cancellation
+              </Button>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

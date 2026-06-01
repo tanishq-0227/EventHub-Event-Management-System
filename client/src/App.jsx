@@ -13,6 +13,7 @@ import Events           from './pages/Events';
 import EventDetail      from './pages/EventDetail';
 import Checkout         from './pages/Checkout';
 import PaymentSuccess   from './pages/PaymentSuccess';
+import SeatSelection    from './pages/SeatSelection';
 
 import Login            from './pages/auth/Login';
 import Register         from './pages/auth/Register';
@@ -43,6 +44,14 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/events" element={<Events />} />
         <Route path="/events/:id" element={<EventDetail />} />
+	<Route
+  path="/events/:id/seats"
+  element={
+    <ProtectedRoute>
+      <SeatSelection />
+    </ProtectedRoute>
+  }
+/>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/auth/callback" element={<AuthCallback />} />

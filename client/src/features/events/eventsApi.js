@@ -33,6 +33,11 @@ export const eventsApi = createApi({
       transformResponse: (res) => res.data || res,
       providesTags: (_r, _e, id) => [{ type: 'Event', id }],
     }),
+    getBookedSeats: build.query({
+    query: (id) => `/events/${id}/booked-seats`,
+    transformResponse: (res) => res.data || res,
+    providesTags: (_r, _e, id) => [{ type: 'Event', id }],
+    }),
     createEvent: build.mutation({
       query: (formData) => ({
         url: '/events',
@@ -63,6 +68,7 @@ export const {
   useGetEventsQuery,
   useGetFeaturedEventsQuery,
   useGetEventByIdQuery,
+  useGetBookedSeatsQuery,
   useCreateEventMutation,
   useUpdateEventMutation,
   useDeleteEventMutation,

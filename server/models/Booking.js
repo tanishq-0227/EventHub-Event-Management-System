@@ -67,6 +67,10 @@ const bookingSchema = new mongoose.Schema(
       type: attendeeInfoSchema,
       default: {},
     },
+    selectedSeats: {
+     type: [String],
+     default: [],
+    },
 
     // ── Cancellation & Refund Fields ────────────────────────────────────────────
     cancellationStatus: {

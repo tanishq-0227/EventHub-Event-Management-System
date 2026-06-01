@@ -6,6 +6,7 @@ const {
   updateEvent,
   deleteEvent,
   getFeaturedEvents,
+  getBookedSeats,
 } = require('../controllers/eventController');
 const { verifyToken, requireRole, optionalAuth } = require('../middleware/authMiddleware');
 const { uploadEventBanner } = require('../middleware/upload');
@@ -13,9 +14,10 @@ const { uploadEventBanner } = require('../middleware/upload');
 const router = express.Router();
 
 // Public routes (optionalAuth so organizer=me still works when logged in)
-router.get('/',          optionalAuth, getEvents);
-router.get('/featured',  getFeaturedEvents);
-router.get('/:id',       getEventById);
+router.get('/', optionalAuth, getEvents);
+router.get('/featured', getFeaturedEvents);
+router.get('/:id/booked-seats', getBookedSeats);
+router.get('/:id', getEventById);
 
 // Organizer / Admin protected
 router.post(

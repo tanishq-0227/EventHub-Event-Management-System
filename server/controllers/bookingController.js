@@ -153,26 +153,47 @@ const getUserBookings = async (req, res) => {
     Booking.countDocuments({ user: req.user.id }),
   ]);
 
-  // Attach issuedTicket (qrImage + ticketCode) to each booking
-  const bookingIds = bookings.map((b) => b._id);
-  const issuedTickets = await IssuedTicket.find({ booking: { $in: bookingIds } })
-    .select('booking ticketCode qrImage tierName isUsed usedAt')
-    .lean();
+  // Attach ALL issued tickets to each booking
+const bookingIds = bookings.map((b) => b._id);
 
-  const issuedMap = {};
-  for (const it of issuedTickets) issuedMap[it.booking.toString()] = it;
+const issuedTickets = await IssuedTicket.find({
+  booking: { $in: bookingIds },
+})
+  .select('booking ticketCode qrImage tierName seatNumber isUsed usedAt')
+  .lean();
 
-  const enriched = bookings.map((b) => ({
-    ...b,
-    issuedTicket: issuedMap[b._id.toString()] ?? null,
-  }));
+const issuedMap = {};
 
-  res.json(
-    new ApiResponse(200, {
+for (const it of issuedTickets) {
+  const key = it.booking.toString();
+
+  if (!issuedMap[key]) {
+    issuedMap[key] = [];
+  }
+
+  issuedMap[key].push(it);
+}
+
+const enriched = bookings.map((b) => ({
+  ...b,
+  issuedTickets: issuedMap[b._id.toString()] || [],
+}));
+
+res.json(
+  new ApiResponse(
+    200,
+    {
       bookings: enriched,
-      pagination: { total, page: Number(page), limit: Number(limit), totalPages: Math.ceil(total / Number(limit)) },
-    }, 'Your bookings fetched')
-  );
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / Number(limit)),
+      },
+    },
+    'Your bookings fetched'
+  )
+);
 };
 
 // ── GET /api/bookings/:id ─────────────────────────────────────────────────────
@@ -194,11 +215,22 @@ const getBookingById = async (req, res) => {
   }
 
   // Attach real IssuedTicket (contains JWT-signed qrImage for gate scanning)
-  const issuedTicket = await IssuedTicket.findOne({ booking: booking._id })
-    .select('ticketCode qrImage tierName isUsed usedAt paymentStatus')
-    .lean();
+  const issuedTickets = await IssuedTicket.find({
+  booking: booking._id,
+})
+  .select('ticketCode qrImage tierName seatNumber isUsed usedAt paymentStatus')
+  .lean();
 
-  res.json(new ApiResponse(200, { ...booking, issuedTicket: issuedTicket ?? null }, 'Booking fetched successfully'));
+res.json(
+  new ApiResponse(
+    200,
+    {
+      ...booking,
+      issuedTickets,
+    },
+    'Booking fetched successfully'
+  )
+);
 };
 
 // ── PATCH /api/bookings/:id/cancel ───────────────────────────────────────────

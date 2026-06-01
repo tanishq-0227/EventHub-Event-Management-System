@@ -44,6 +44,12 @@ const issuedTicketSchema = new mongoose.Schema(
       default: 'General',
       trim:    true,
     },
+    seatNumber: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
     /** Payment status — ticket is only valid for entry if 'completed' */
     paymentStatus: {
       type:    String,
